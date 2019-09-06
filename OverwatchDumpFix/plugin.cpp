@@ -1,15 +1,13 @@
 #include "plugin.h"
 
+#include "anti_debug_util.h"
 #include "fix_dump.h"
 
 Debuggee debuggee;
 
 // Plugin exported command.
 static const char cmdOverwatchDumpFix[] = "OverwatchDumpFix";
-// Overwatch.exe version this plugin is developed for.
-static const char overwatchTargetVersion[] = "1.11.1.2.36859";
 
-static const char realPluginVersion[] = "v5.0.2";
 static const char authorName[] = "changeofpace";
 static const char githubSourceURL[] = R"(https://github.com/changeofpace/Overwatch-Dump-Fix)";
 
@@ -18,8 +16,10 @@ static const char githubSourceURL[] = R"(https://github.com/changeofpace/Overwat
 
 static bool cbOverwatchDumpFix(int argc, char* argv[])
 {
-    pluginLog("Executing %s %s.\n", PLUGIN_NAME, realPluginVersion);
-    pluginLog("This plugin is updated for Overwatch version %s.\n", overwatchTargetVersion);
+    UNREFERENCED_PARAMETER(argc);
+    UNREFERENCED_PARAMETER(argv);
+
+    pluginLog("Executing %s v%d.\n", PLUGIN_NAME, PLUGIN_VERSION);
     if (!fixdump::current::FixOverwatch()) {
         pluginLog("Failed to complete. Open an issue on github with the error message and log output:\n");
         pluginLog("    %s\n", githubSourceURL);
@@ -34,13 +34,80 @@ static bool cbOverwatchDumpFix(int argc, char* argv[])
 
 PLUG_EXPORT void CBCREATEPROCESS(CBTYPE cbType, PLUG_CB_CREATEPROCESS* Info)
 {
-    debuggee = Debuggee{Info->fdProcessInfo->hProcess,
-        Info->modInfo->BaseOfImage,
-        Info->modInfo->ImageSize};
+    ULONG cbImageSize = 0;
+    BOOL status = TRUE;
+
+    UNREFERENCED_PARAMETER(cbType);
+
+    //
+    // Zero global variables.
+    //
+    RtlSecureZeroMemory(&debuggee, sizeof(debuggee));
+
+    INF_PRINT("===========================================================\n");
+    INF_PRINT("                  Create Process Callback\n");
+    INF_PRINT("===========================================================\n");
+
+    //
+    // Validate the callback parameters because we are compiling an old version
+    //  of the plugin SDK.
+    //
+    if (!Info->fdProcessInfo->hProcess)
+    {
+        ERR_PRINT("Error: hProcess was null.\n");
+        goto exit;
+    }
+
+    if (!Info->modInfo->BaseOfImage)
+    {
+        ERR_PRINT("Error: BaseOfImage was null.\n");
+        goto exit;
+    }
+
+    //
+    // NOTE Info.modInfo.ImageSize is always zero.
+    //
+    if (!fixdump::current::GetOverwatchImageSize(
+            Info->fdProcessInfo->hProcess,
+            &cbImageSize))
+    {
+        ERR_PRINT("Error: GetOverwatchImageSize failed.\n");
+        goto exit;
+    }
+
+    //
+    // Initialize global variables.
+    //
+    debuggee.hProcess = Info->fdProcessInfo->hProcess;
+    debuggee.imageBase = Info->modInfo->BaseOfImage;
+    debuggee.imageSize = cbImageSize;
+
+    INF_PRINT("    hProcess:  0x%IX\n", debuggee.hProcess);
+    INF_PRINT("    ImageBase: %p\n", debuggee.imageBase);
+    INF_PRINT("    ImageSize: 0x%X\n", debuggee.imageSize);
+
+    //
+    // Remove anti-debugging techniques.
+    //
+    status = AduRevertPatchNtdllDbgBreakPoint(debuggee.hProcess);
+    if (!status)
+    {
+        ERR_PRINT(
+            "Failed to patch ntdll!DbgBreakPoint, debugger may fail to attach.\n");
+        goto exit;
+    }
+
+exit:
+    INF_PRINT("-----------------------------------------------------------\n");
+
+    return;
 }
 
 PLUG_EXPORT void CBEXITPROCESS(CBTYPE cbType, EXIT_PROCESS_DEBUG_INFO* Info)
 {
+    UNREFERENCED_PARAMETER(cbType);
+    UNREFERENCED_PARAMETER(Info);
+
     debuggee = {};
 }
 
@@ -48,6 +115,8 @@ enum { PLUGIN_MENU_ABOUT };
 
 PLUG_EXPORT void CBMENUENTRY(CBTYPE cbType, PLUG_CB_MENUENTRY* info)
 {
+    UNREFERENCED_PARAMETER(cbType);
+
     switch (info->hEntry)
     {
     case PLUGIN_MENU_ABOUT: {
@@ -55,7 +124,7 @@ PLUG_EXPORT void CBMENUENTRY(CBTYPE cbType, PLUG_CB_MENUENTRY* info)
         char buf[maxMessageBoxStringSize] = "";
 
         _snprintf_s(buf, maxMessageBoxStringSize, _TRUNCATE,
-                    "Author:  %s.\n\nsource code:  %s.",
+                    "Author:  %s\n\nSource Code:  %s",
                     authorName, githubSourceURL);
 
         MessageBoxA(hwndDlg, buf, "About", 0);
@@ -66,6 +135,8 @@ PLUG_EXPORT void CBMENUENTRY(CBTYPE cbType, PLUG_CB_MENUENTRY* info)
 
 bool pluginInit(PLUG_INITSTRUCT* initStruct)
 {
+    UNREFERENCED_PARAMETER(initStruct);
+
     if (!_plugin_registercommand(pluginHandle, cmdOverwatchDumpFix, cbOverwatchDumpFix, true)) {
         pluginLog("failed to register command %s.\n", cmdOverwatchDumpFix);
         return false;
